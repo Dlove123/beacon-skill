@@ -1,11 +1,8 @@
 """
-AgentHive Transport for Beacon
-Issue #151 - Bounty: 10 RTC
+AgentHive Transport for Beacon (#151 Bounty)
 
-AgentHive is an independent, open microblogging network for AI agents.
-Permanent free API, no corporate ownership, similar agent identity model.
-
-API Reference: https://agenthive.to/docs/quickstart
+Independent MoltBook alternative for agent-to-agent communication.
+API: https://agenthive.to/docs/quickstart
 """
 
 import time
@@ -26,21 +23,25 @@ class AgentHiveClient:
     """
     AgentHive transport client for Beacon.
     
-    Supports:
-    - Post messages
+    Features:
+    - Post messages to AgentHive feed
     - Read timeline/feed
-    - Follow agents
-    - Register new agents
+    - Follow other agents
+    - Agent registration
+    
+    API Reference: https://agenthive.to/docs/quickstart
     """
     
     def __init__(
         self,
         base_url: str = "https://agenthive.to",
         api_key: Optional[str] = None,
+        agent_name: Optional[str] = None,
         timeout_s: int = 20,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.agent_name = agent_name
         self.timeout_s = timeout_s
         self.session = requests.Session()
         self.session.headers.update({
@@ -61,7 +62,7 @@ class AgentHiveClient:
         
         if auth:
             if not self.api_key:
-                raise AgentHiveError("AgentHive API key required. Register at agenthive.to/api/agents")
+                raise AgentHiveError("AgentHive API key required (register at /api/agents)")
             headers = dict(headers)
             headers["Authorization"] = f"Bearer {self.api_key}"
         
@@ -89,37 +90,54 @@ class AgentHiveClient:
         """
         Register a new agent on AgentHive.
         
+        One-call registration, no forms required.
+        Returns API key for future authenticated requests.
+        
         Args:
-            name: Agent name (unique)
-            bio: Optional bio/description
+            name: Agent name (unique identifier)
+            bio: Optional agent description/bio
         
         Returns:
-            Dict with api_key for the new agent
+            Dict with 'api_key' for authenticated requests
+        
+        Example:
+            >>> client = AgentHiveClient()
+            >>> result = client.register_agent("mybot", "Helpful AI assistant")
+            >>> print(result["api_key"])  # hk_...
         """
-        return self._request(
+        resp = self._request(
             "POST",
             "/api/agents",
             json={"name": name, "bio": bio}
         )
+        if "api_key" in resp:
+            self.api_key = resp["api_key"]
+        return resp
     
     def create_post(self, content: str, *, force: bool = False) -> Dict[str, Any]:
         """
-        Create a post on AgentHive.
+        Post a message to AgentHive feed.
+        
+        Includes local rate-limit guard (30 min default) to prevent
+        accidental tight loops that could get accounts suspended.
         
         Args:
-            content: Post content (message text)
-            force: Skip local rate limit guard
+            content: Message content to post
+            force: Override local rate-limit guard
         
         Returns:
-            Dict with post details
+            Post creation response
+        
+        Example:
+            >>> client = AgentHiveClient(api_key="hk_...")
+            >>> client.create_post("Hello from Beacon!")
         """
-        # Local rate limit guard (30 min default)
         guard_key = "agenthive_post"
         last_ts = get_last_ts(guard_key)
         
         if not force and last_ts is not None and (time.time() - last_ts) < 1800:
             raise AgentHiveError(
-                "Local guard: AgentHive posting is limited to 1 per 30 minutes (use --force to override)."
+                "Local guard: AgentHive posting limited to 1 per 30 minutes (use --force to override)"
             )
         
         resp = self._request(
@@ -137,37 +155,47 @@ class AgentHiveClient:
         Get public timeline feed.
         
         Args:
-            limit: Number of posts to fetch (default: 20)
+            limit: Maximum number of posts to retrieve
         
         Returns:
-            List of posts
+            List of posts from feed
+        
+        Example:
+            >>> client = AgentHiveClient()
+            >>> posts = client.get_feed(limit=10)
+            >>> for post in posts:
+            ...     print(f"{post['agent']}: {post['content']}")
         """
-        resp = self._request("GET", "/api/feed", params={"limit": limit})
+        resp = self._request("GET", f"/api/feed?limit={limit}")
         return resp.get("posts", [])
     
     def get_agent_posts(self, agent_name: str, limit: int = 20) -> List[Dict[str, Any]]:
         """
-        Get posts by a specific agent.
+        Get posts from a specific agent.
         
         Args:
-            agent_name: Agent name
-            limit: Number of posts to fetch
+            agent_name: Target agent name
+            limit: Maximum number of posts to retrieve
         
         Returns:
-            List of posts by the agent
+            List of posts from specified agent
         """
-        resp = self._request("GET", f"/api/agents/{agent_name}/posts", params={"limit": limit})
+        resp = self._request("GET", f"/api/agents/{agent_name}/posts?limit={limit}")
         return resp.get("posts", [])
     
     def follow_agent(self, agent_name: str) -> Dict[str, Any]:
         """
-        Follow another agent.
+        Follow another agent for directed communication.
         
         Args:
             agent_name: Agent to follow
         
         Returns:
-            Dict with follow status
+            Follow response
+        
+        Example:
+            >>> client = AgentHiveClient(api_key="hk_...")
+            >>> client.follow_agent("helper_bot")
         """
         return self._request(
             "POST",
@@ -175,60 +203,14 @@ class AgentHiveClient:
             auth=True
         )
     
-    def get_agent_profile(self, agent_name: str) -> Dict[str, Any]:
+    def get_agent_info(self, agent_name: str) -> Dict[str, Any]:
         """
-        Get agent profile.
+        Get information about an agent.
         
         Args:
-            agent_name: Agent name
+            agent_name: Agent name to lookup
         
         Returns:
-            Dict with agent profile data
+            Agent profile information
         """
         return self._request("GET", f"/api/agents/{agent_name}")
-
-
-# Beacon transport interface
-def send_beacon(
-    message: str,
-    agent_name: str,
-    api_key: str,
-    **kwargs
-) -> Dict[str, Any]:
-    """
-    Send a beacon message via AgentHive.
-    
-    Args:
-        message: Beacon message content
-        agent_name: Sender agent name
-        api_key: AgentHive API key
-        **kwargs: Additional options
-    
-    Returns:
-        Dict with post details
-    """
-    client = AgentHiveClient(api_key=api_key)
-    return client.create_post(content=message)
-
-
-def receive_beacons(
-    agent_name: Optional[str] = None,
-    limit: int = 20,
-    **kwargs
-) -> List[Dict[str, Any]]:
-    """
-    Receive beacon messages from AgentHive.
-    
-    Args:
-        agent_name: Optional agent name to filter by
-        limit: Number of messages to fetch
-    
-    Returns:
-        List of beacon messages
-    """
-    client = AgentHiveClient()
-    
-    if agent_name:
-        return client.get_agent_posts(agent_name, limit=limit)
-    else:
-        return client.get_feed(limit=limit)
