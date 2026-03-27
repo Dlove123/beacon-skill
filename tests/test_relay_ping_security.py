@@ -71,7 +71,7 @@ class TestRelayPingSecurity(unittest.TestCase):
 
     def _ping_payload(self, **overrides):
         payload = {
-            "nonce": f"ping-{time.time_ns()}",
+            "nonce": f"ping-{int(time.time() * 1e9)}",
             "ts": time.time(),
         }
         payload.update(overrides)
